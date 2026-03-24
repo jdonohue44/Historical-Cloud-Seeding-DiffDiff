@@ -2,8 +2,8 @@
 Parallel Trends Assessment for Cloud Seeding TWFE
 ==================================================
 
-For DiD-eligible sites, tests whether the target–control precipitation gap
-was stable before seeding began — the core identifying assumption.
+Tests whether the target–control precipitation gap was stable before
+seeding began — the core identifying assumption of the TWFE design.
 
 Approach
 --------
@@ -23,12 +23,11 @@ Approach
 5. Run a joint F-test on all pre-treatment coefficients (H0: all β_k = 0
    for k < 0).
 
-Outputs
--------
-  figures/parallel_trends_event_study.png
-  Console: pre-trend test statistics
-
-Data: data/cloud_seeding_monthly_panel.csv
+Input:
+ - data/input/cloud_seeding_monthly_panel.csv
+Output:
+ - Console: Pre-trend test results and event-study coefficients
+ - figures/parallel_trends_event_study.png: Event-study plot of gap coefficients by event year
 """
 
 from pathlib import Path
@@ -42,7 +41,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="linearmodels")
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = ROOT / "data" / "cloud_seeding_monthly_panel.csv"
+DATA_PATH = ROOT / "data" / "input" / "cloud_seeding_monthly_panel.csv"
 FIG_DIR = ROOT / "figures"
 FIG_DIR.mkdir(exist_ok=True)
 
@@ -50,15 +49,12 @@ FIG_DIR.mkdir(exist_ok=True)
 df = pd.read_csv(DATA_PATH)
 df["precip_gap"] = df["target_area_precip_mm"] - df["control_area_precip_mm"]
 
-# DiD-eligible sites only
-elig = df[df["did_eligible"]].copy()
-
 # Restrict to seeding-season months for each site
-elig["seeding_months"] = elig["seeding_season_months"].str.split(";")
-elig["in_season"] = elig.apply(lambda r: str(r["month"]) in r["seeding_months"], axis=1)
-season = elig[elig["in_season"]].copy()
+df["seeding_months"] = df["seeding_season_months"].str.split(";")
+df["in_season"] = df.apply(lambda r: str(r["month"]) in r["seeding_months"], axis=1)
+season = df[df["in_season"]].copy()
 
-print(f"DiD-eligible sites: {season['site_id'].nunique()}")
+print(f"Sites: {season['site_id'].nunique()}")
 print(f"Seeding-season observations: {len(season):,}")
 
 # ── Compute annual seeding-season gap per site ───────────────────────────────
