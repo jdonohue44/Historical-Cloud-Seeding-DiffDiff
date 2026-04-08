@@ -139,8 +139,9 @@ for i, site_id in enumerate(site_ids):
             ax.axvspan(s, e + np.timedelta64(15, "D"),
                        alpha=0.12, color="steelblue", zorder=0)
 
-    state = sd["state"].iloc[0]
-    ax.set_title(f"{site_id} ({state})", fontsize=9, fontweight="bold")
+    state = sd["state"].iloc[0] if "state" in sd.columns else ""
+    title = f"{site_id} ({state})" if state else site_id
+    ax.set_title(title, fontsize=9, fontweight="bold")
     ax.set_ylabel("Precip (mm)", fontsize=8)
     ax.tick_params(axis="both", labelsize=7)
     ax.grid(True, alpha=0.2)

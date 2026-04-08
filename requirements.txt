@@ -2,3 +2,5 @@ pandas
 matplotlib
 linearmodels
 streamlit
+xarray
+netCDF4
