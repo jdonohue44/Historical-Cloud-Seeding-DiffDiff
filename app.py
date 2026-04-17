@@ -1,10 +1,20 @@
 """
-Cloud Seeding TWFE Explorer
-============================
-Interactive site-by-site inspection of target vs control precipitation
-and per-site DiD causal effect estimates.
+Cloud Seeding Difference-in-Differences Explorer
+======================================
 
-Run:  streamlit run app.py
+Interactive site-by-site inspection of target vs control precipitation and
+the difference-in-differences causal estimate:
+    ATT = mean(target - control | seeded months) - mean(target - control | unseeded months)
+
+USAGE:
+ - streamlit run app.py
+
+INPUT:
+ - data/input/cloud_seeding_monthly_panel.csv
+
+OUTPUT:
+  - Streamlit dashboard: per-site precipitation series and within-site DiD
+  - All-sites comparison table
 """
 
 import streamlit as st
@@ -12,6 +22,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from scipy import stats
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -26,30 +37,99 @@ def load_data():
     df["year_month"] = pd.to_datetime(df["year_month"])
     df["precip_gap"] = df["target_area_precip_mm"] - df["control_area_precip_mm"]
     df["seeded"] = df["target_area_seeded"].astype(int)
-
-    # Derive treatment_start_year: first month with seeding == 1
-    first_seeded = (
-        df[df["seeded"] == 1]
-        .groupby("site_id")["year_month"]
-        .min()
-        .dt.year
-        .rename("treatment_start_year")
-    )
-    df = df.merge(first_seeded, on="site_id", how="left")
-
-    # DiD-eligible: seeding starts AFTER the first available month (has a pre-period)
-    first_month = df["year_month"].min()
-    df["did_eligible"] = df["treatment_start_year"].apply(
-        lambda y: pd.notna(y) and pd.Timestamp(f"{int(y)}-01-01") > first_month
-    )
-
     return df
 
 
 df = load_data()
 
-st.title("Cloud Seeding DiD Explorer")
-st.caption("Target vs control precipitation — select a site to inspect")
+
+@st.cache_data
+def compute_aggregate_att(df):
+    """Equal-weighted mean of per-site DiDs, with site-clustered SE."""
+    site_gap = df.groupby(["site_id", "seeded"])["precip_gap"].mean().unstack()
+    dids = (site_gap[1] - site_gap[0]).dropna()
+    n = len(dids)
+    att = dids.mean()
+    se = dids.std(ddof=1) / np.sqrt(n)
+    t_stat = att / se
+    p_value = 2 * stats.t.sf(abs(t_stat), df=n - 1)
+    ci_half = stats.t.ppf(0.975, df=n - 1) * se
+    ci_low, ci_high = att - ci_half, att + ci_half
+    return att, se, t_stat, p_value, ci_low, ci_high, n
+
+
+att, se, t_stat, p_value, ci_low, ci_high, n_sites_used = compute_aggregate_att(df)
+sig = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+
+# Color the headline ATT by sign + significance. Significant positive = green
+# (seeding → more precip), significant negative = red, not significant = slate.
+if p_value < 0.05 and att > 0:
+    att_bg, att_fg, att_border = "#dcfce7", "#14532d", "#16a34a"
+elif p_value < 0.05 and att < 0:
+    att_bg, att_fg, att_border = "#fee2e2", "#7f1d1d", "#dc2626"
+else:
+    att_bg, att_fg, att_border = "#f1f5f9", "#0f172a", "#64748b"
+
+st.title("Cloud Seeding Difference-in-Differences Explorer")
+st.caption(
+    "Target vs control precipitation. We compare the "
+    "target−control gap during seeded months to the same gap during unseeded months. "
+    "The aggregate ATT is the equal-weighted mean of per-site DiDs, so every site "
+    "counts the same regardless of how many months it seeded. The DiD is the difference in the target-control gap between seeded and unseeded months."
+)
+
+# ── Aggregate ATT ────────────────────────────────────────────────────────────
+st.markdown("### Aggregate causal effect (equal-weighted across sites)")
+
+att_cols = st.columns([2.2, 1, 1.4, 1])
+
+att_cols[0].markdown(
+    f"""
+    <div style="
+        background: {att_bg};
+        border: 1px solid {att_border};
+        border-left: 6px solid {att_border};
+        border-radius: 6px;
+        padding: 10px 14px;
+        color: {att_fg};
+    ">
+      <div style="font-size: 0.80rem; opacity: 0.75; text-transform: uppercase;
+                  letter-spacing: 0.04em; font-weight: 600;">
+        ATT (average treatment effect on the treated)
+      </div>
+      <div style="font-size: 2.0rem; font-weight: 700; line-height: 1.15;">
+        {att:+.3f} mm {sig}
+      </div>
+      <div style="font-size: 0.80rem; opacity: 0.80;">
+        Equal-weighted mean of per-site DiDs (n = {n_sites_used} sites)
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+att_cols[1].metric(
+    "p-value",
+    f"{p_value:.4f}",
+    help=f"Two-sided p-value. t = {t_stat:+.2f} on {n_sites_used - 1} df "
+         f"(t-distribution). Stars: * p<0.05, ** p<0.01, *** p<0.001.",
+)
+att_cols[2].metric(
+    "95% CI",
+    f"[{ci_low:+.3f}, {ci_high:+.3f}] mm",
+    help="95% confidence interval for the ATT, using a t-distribution with "
+         "df = n_sites − 1. Clustered at the site level by construction "
+         "(each site contributes a single DiD).",
+)
+att_cols[3].metric(
+    "Std. error",
+    f"{se:.3f}",
+    help="SE = sd(DiD_i) / sqrt(n_sites). Clustered at the site level by "
+         "construction — each site is collapsed to one DiD before averaging, "
+         "so within-site serial correlation cannot inflate the aggregate variance.",
+)
+
+st.markdown("---")
 
 # ── Sidebar: site selector ────────────────────────────────────────────────────
 site_meta = (
@@ -57,15 +137,12 @@ site_meta = (
     .agg(
         state=("state", "first"),
         project_name=("project_name", "first"),
-        did_eligible=("did_eligible", "first"),
-        treatment_start_year=("treatment_start_year", "first"),
         lat=("site_latitude", "first"),
         lon=("site_longitude", "first"),
     )
     .sort_index()
 )
 
-# Build readable labels: project name if known, else site_id (state)
 def site_label(sid, row):
     name = row["project_name"] if pd.notna(row["project_name"]) else ""
     state = row["state"] if pd.notna(row["state"]) else ""
@@ -75,9 +152,14 @@ def site_label(sid, row):
 
 site_labels = {sid: site_label(sid, row) for sid, row in site_meta.iterrows()}
 
+DEFAULT_SITE = "site_028"
+site_options = list(site_labels.keys())
+default_index = site_options.index(DEFAULT_SITE) if DEFAULT_SITE in site_options else 0
+
 selected = st.sidebar.selectbox(
     "Select site",
-    options=list(site_labels.keys()),
+    options=site_options,
+    index=default_index,
     format_func=lambda x: site_labels[x],
 )
 
@@ -89,68 +171,110 @@ st.sidebar.markdown(f"**State:** {meta['state']}")
 if pd.notna(meta["project_name"]):
     st.sidebar.markdown(f"**Program:** {meta['project_name']}")
 st.sidebar.markdown(f"**Location:** {meta['lat']:.2f}°N, {meta['lon']:.2f}°W")
-st.sidebar.markdown(
-    f"**DiD eligible:** {'Yes' if meta['did_eligible'] else 'No (always-treated or never-treated)'}"
-)
-if pd.notna(meta["treatment_start_year"]):
-    st.sidebar.markdown(f"**First seeded year:** {int(meta['treatment_start_year'])}")
 
-n_seeded = sd["seeded"].sum()
+n_seeded = int(sd["seeded"].sum())
 n_total  = len(sd)
+n_unseeded = n_total - n_seeded
 st.sidebar.markdown(f"**Seeded months:** {n_seeded} / {n_total}")
+st.sidebar.markdown(f"**Unseeded months:** {n_unseeded} / {n_total}")
 
-# ── Per-site DiD estimate ─────────────────────────────────────────────────────
-st.markdown("### Per-site causal effect estimate")
-
-did_eligible = bool(meta["did_eligible"])
-tx_year = int(meta["treatment_start_year"]) if pd.notna(meta["treatment_start_year"]) else None
-
-if did_eligible and tx_year is not None:
-    tx_start = pd.Timestamp(f"{tx_year}-01-01")
-    pre  = sd[sd["year_month"] <  tx_start]
-    post = sd[sd["year_month"] >= tx_start]
-
-    # Simple DiD: (gap_post_seeded - gap_post_unseeded) vs pre-period baseline
-    gap_pre           = pre["precip_gap"].mean()
-    gap_post_seeded   = post.loc[post["seeded"] == 1, "precip_gap"].mean()
-    gap_post_unseeded = post.loc[post["seeded"] == 0, "precip_gap"].mean()
-
-    # ATT proxy: change in gap during seeded months relative to pre-period
-    att_proxy = gap_post_seeded - gap_pre if pd.notna(gap_post_seeded) else np.nan
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pre-period mean gap", f"{gap_pre:+.2f} mm" if pd.notna(gap_pre) else "n/a",
-              help="Mean(target − control) before seeding program started")
-    c2.metric("Post-period gap (seeded months)", f"{gap_post_seeded:+.2f} mm" if pd.notna(gap_post_seeded) else "n/a",
-              help="Mean(target − control) during active seeding months")
-    c3.metric("Post-period gap (unseeded months)", f"{gap_post_unseeded:+.2f} mm" if pd.notna(gap_post_unseeded) else "n/a",
-              help="Mean(target − control) in post-period but non-seeding months")
-    c4.metric("ATT proxy (seeded − pre baseline)", f"{att_proxy:+.2f} mm" if pd.notna(att_proxy) else "n/a",
-              help="Change in target−control gap during seeded months vs pre-period. "
-                   "Positive = seeding associated with more precipitation at target relative to control.")
-
-    n_pre  = len(pre)
-    n_post_s  = (post["seeded"] == 1).sum()
-    n_post_ns = (post["seeded"] == 0).sum()
-    st.caption(
-        f"Pre-period: {n_pre} months  |  "
-        f"Post seeded: {n_post_s} months  |  "
-        f"Post unseeded: {n_post_ns} months  |  "
-        f"Treatment start: {tx_year}"
+if n_seeded == 0:
+    st.warning(
+        f"NOTE: **{selected}** has 0 seeded months in the analysis panel. "
+        "This site's seeding operations all fall in 2023+, which is outside the "
+        "ERA5 precipitation coverage window in this dataset (ends Dec 2022). "
+        "It is automatically excluded from the aggregate ATT above."
     )
+elif n_unseeded == 0:
+    st.warning(
+        f"**{selected}** has 0 unseeded months. Within-site DiD is undefined "
+        "and it is excluded from the aggregate ATT above."
+    )
+
+# ── Per-site within-site DiD ─────────────────────────────────────────────────
+st.markdown("### Per-site causal effect estimate (within-site DiD)")
+
+gaps_unseeded = sd.loc[sd["seeded"] == 0, "precip_gap"].dropna().values
+gaps_seeded   = sd.loc[sd["seeded"] == 1, "precip_gap"].dropna().values
+gap_unseeded  = gaps_unseeded.mean() if len(gaps_unseeded) else np.nan
+gap_seeded    = gaps_seeded.mean()   if len(gaps_seeded)   else np.nan
+
+# Welch's two-sample t-test: mean(gap | seeded) − mean(gap | unseeded).
+# Unequal-variance SE; each month treated as an observation. Assumes months
+# are independent within site (does NOT correct for serial correlation;
+# if that matters, switch to Newey-West or block bootstrap later).
+if len(gaps_seeded) >= 2 and len(gaps_unseeded) >= 2:
+    did = gap_seeded - gap_unseeded
+    var_s = gaps_seeded.var(ddof=1)
+    var_u = gaps_unseeded.var(ddof=1)
+    n_s, n_u = len(gaps_seeded), len(gaps_unseeded)
+    site_se = np.sqrt(var_s / n_s + var_u / n_u)
+    site_t = did / site_se if site_se > 0 else np.nan
+    welch_df = (
+        (var_s / n_s + var_u / n_u) ** 2
+        / ((var_s / n_s) ** 2 / (n_s - 1) + (var_u / n_u) ** 2 / (n_u - 1))
+    )
+    site_p = 2 * stats.t.sf(abs(site_t), df=welch_df) if pd.notna(site_t) else np.nan
+    ci_half = stats.t.ppf(0.975, df=welch_df) * site_se
+    ci_low, ci_high = did - ci_half, did + ci_half
+    site_sig = "***" if site_p < 0.001 else "**" if site_p < 0.01 else "*" if site_p < 0.05 else ""
 else:
-    st.info(
-        "This site is **not DiD-eligible** — it is seeded throughout the full record "
-        "with no clean pre-treatment period. The stats below are descriptive comparisons only."
+    did = (
+        gap_seeded - gap_unseeded
+        if pd.notna(gap_seeded) and pd.notna(gap_unseeded)
+        else np.nan
     )
-    gap_no_seed = sd.loc[sd["seeded"] == 0, "precip_gap"].mean()
-    gap_seed    = sd.loc[sd["seeded"] == 1, "precip_gap"].mean()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Mean gap (unseeded months)", f"{gap_no_seed:+.2f} mm" if pd.notna(gap_no_seed) else "n/a")
-    c2.metric("Mean gap (seeded months)",   f"{gap_seed:+.2f} mm"    if pd.notna(gap_seed) else "n/a")
-    diff = gap_seed - gap_no_seed if pd.notna(gap_seed) and pd.notna(gap_no_seed) else np.nan
-    c3.metric("Difference", f"{diff:+.2f} mm" if pd.notna(diff) else "n/a",
-              help="Not a causal estimate — seeding months are endogenously chosen.")
+    site_se = site_t = site_p = ci_low = ci_high = np.nan
+    site_sig = ""
+
+c1, c2, c3 = st.columns(3)
+c1.metric(
+    "Mean gap, unseeded months",
+    f"{gap_unseeded:+.2f} mm" if pd.notna(gap_unseeded) else "n/a",
+    help="Mean(target − control) in months with no active seeding. "
+         "Expected to be near zero if the control is a good match.",
+)
+c2.metric(
+    "Mean gap, seeded months",
+    f"{gap_seeded:+.2f} mm" if pd.notna(gap_seeded) else "n/a",
+    help="Mean(target − control) in months with active seeding.",
+)
+c3.metric(
+    "Within-site DiD",
+    f"{did:+.2f} mm" + (f" {site_sig}" if site_sig else "") if pd.notna(did) else "n/a",
+    help="Seeded-months gap minus unseeded-months gap. "
+         "Positive → seeding associated with more precipitation at target relative to control.",
+)
+
+c4, c5, c6, c7 = st.columns(4)
+c4.metric(
+    "SE (Welch)",
+    f"{site_se:.3f}" if pd.notna(site_se) else "n/a",
+    help="Unequal-variance SE on the difference in monthly gap means. "
+         "Months are treated as independent observations within this site; "
+         "serial correlation is NOT corrected for.",
+)
+c5.metric(
+    "t-stat",
+    f"{site_t:+.2f}" if pd.notna(site_t) else "n/a",
+    help="Welch's t for H0: DiD = 0.",
+)
+c6.metric(
+    "p-value",
+    f"{site_p:.4f}" if pd.notna(site_p) else "n/a",
+    help="Two-sided p-value from Welch's t-distribution.",
+)
+c7.metric(
+    "95% CI",
+    f"[{ci_low:+.2f}, {ci_high:+.2f}]" if pd.notna(ci_low) else "n/a",
+    help="95% confidence interval for the per-site DiD (Welch).",
+)
+
+st.caption(
+    f"Seeded months: {n_seeded}  |  Unseeded months: {n_unseeded}  |  Total: {n_total}"
+    + (f"  |  Insufficient months for inference (need ≥2 seeded and ≥2 unseeded)."
+       if pd.isna(site_t) else "")
+)
 
 # ── Main chart ────────────────────────────────────────────────────────────────
 st.markdown("### Precipitation time series")
@@ -171,14 +295,6 @@ if len(seeded_rows) > 0:
     for s, e in zip(starts, ends):
         ax1.axvspan(s, e + np.timedelta64(15, "D"), alpha=0.10, color="#2563eb", zorder=0)
 
-# Treatment start line for DiD-eligible sites
-if did_eligible and tx_year is not None:
-    tx_start = pd.Timestamp(f"{tx_year}-01-01")
-    ax1.axvline(tx_start, color="black", linewidth=1.2, linestyle="--", alpha=0.6, zorder=1)
-    ylim = ax1.get_ylim()
-    ax1.text(tx_start, ylim[1], f"  Program start ({tx_year})",
-             fontsize=8, color="black", alpha=0.7, va="top")
-
 label = meta["project_name"] if pd.notna(meta["project_name"]) else selected
 ax1.set_ylabel("Precipitation (mm)", fontsize=11)
 ax1.legend(fontsize=10, loc="upper right")
@@ -191,9 +307,6 @@ ax2.bar(sd["year_month"], sd["precip_gap"],
         color=np.where(sd["seeded"] == 1, "#2563eb", "#94a3b8"),
         alpha=0.7, zorder=2)
 ax2.axhline(0, color="black", linewidth=0.6)
-if did_eligible and tx_year is not None:
-    ax2.axvline(pd.Timestamp(f"{tx_year}-01-01"),
-                color="black", linewidth=1.2, linestyle="--", alpha=0.6)
 ax2.set_ylabel("Gap: Target − Control (mm)", fontsize=10)
 ax2.set_xlabel("Date", fontsize=11)
 ax2.grid(True, alpha=0.15)
@@ -212,8 +325,7 @@ with st.expander("All sites comparison table"):
         .unstack(fill_value=np.nan)
         .rename(columns={0: "Mean gap (unseeded)", 1: "Mean gap (seeded)"})
     )
-    summary["Difference"] = summary["Mean gap (seeded)"] - summary["Mean gap (unseeded)"]
-    # Join state and project name
-    summary = summary.join(site_meta[["state", "project_name", "did_eligible", "treatment_start_year"]])
-    summary = summary.round(2).sort_values("Difference", ascending=False)
+    summary["Within-site DiD"] = summary["Mean gap (seeded)"] - summary["Mean gap (unseeded)"]
+    summary = summary.join(site_meta[["state", "project_name"]])
+    summary = summary.round(2).sort_values("Within-site DiD", ascending=False)
     st.dataframe(summary, use_container_width=True)

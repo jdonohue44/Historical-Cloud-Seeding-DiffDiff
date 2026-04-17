@@ -2,22 +2,32 @@
 
 Does cloud seeding actually increase precipitation? This project estimates the effect of cloud seeding on precipiation by using historical cloud seeding operations data across the Western United States from 2000 to 2025.
 
-## Data Sources
+## Input Data Sources
+
 1. Cloud Seeding Activities in the United States (2000-2025) — [Zenodo](https://zenodo.org/records/16754931)
 2. Precipitation data — ERA5 reanalysis
 
-Each cloud seeding program has a **target area** (where they seeded) and a **control area** (a nearby similar region that isn't seeded). Seeding is seasonal, where programs operate for a few months each year and are inactive the rest. For example, in mountainous ski areas like Alta and Snowbird, glaciogenic cloud seeding is used to increse snow during winter months. 
+Each cloud seeding program has a **target area** (where they seeded) and a **control area** (a nearby similar region that isn't seeded).
 
-## Data Processing: Building the Panel
-A full panel of seeding x precipitation data is constructed in preparation for the difference-in-differences comparison.
+## Data Pre-Processing: Building the Panel
 
-| Column | Description |
-|--------|-------------|
-| `site_id` | Cloud seeding program identifier |
-| `year_month` | Calendar month (e.g., `2015-01`) |
-| `target_area_precip_mm` | Precipitation in the seeded target area |
-| `control_area_precip_mm` | Precipitation in the nearby control area |
-| `target_area_seeded` | Whether seeding was active that month |
+A full panel of seeding × precipitation data is constructed in preparation for the difference-in-differences comparison. The panel is available at `data/input/cloud_seeding_monthly_panel.csv`
+
+### Columns
+
+| Column                   | Description                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `site_id`                | Unique identifier for the cloud seeding program / site                       |
+| `site_latitude`          | Latitude of the seeding site (decimal degrees)                               |
+| `site_longitude`         | Longitude of the seeding site (decimal degrees)                              |
+| `year_month`             | Calendar month in `YYYY-MM` format (e.g., `2015-01`)                         |
+| `year`                   | Calendar year                                                                |
+| `month`                  | Calendar month as an integer (1–12)                                          |
+| `target_area_precip_mm`  | Total precipitation (mm) in the seeded target area for the month             |
+| `control_area_precip_mm` | Total precipitation (mm) in the nearby control area for the month            |
+| `target_area_seeded`     | Indicator (0/1) for whether seeding was active in the target area that month |
+| `state`                  | U.S. state where the seeding project is located                              |
+| `project_name`           | Name of the cloud seeding project                                            |
 
 ## Difference-in-Differences Method
 
@@ -27,30 +37,55 @@ For each site *i* in month *t*, define the **precipitation gap**:
 
 $$\Delta P_{it} = P^{\text{target}}_{it} - P^{\text{control}}_{it}$$
 
-Then estimate:
+### Estimator: equal-weighted within-site DiD
 
-$$\Delta P_{it} = \alpha_i + \gamma_t + \delta \cdot \text{Seeded}_{it} + \varepsilon_{it}$$
+For each site *i*, compute the site-level DiD on the gap:
 
-- **Site fixed effects** ($\alpha_i$) account for permanent differences between sites (elevation, geography, baseline climate).
-- **Year-month fixed effects** ($\gamma_t$) account for weather shocks that affect all sites in a given month (El Nino, drought, etc.).
-- **$\delta$** is the estimate: how much extra precipitation (in mm) falls in the target area relative to the control area when seeding is active.
+$$\widehat{DiD}_i = \overline{\Delta P}_{i,\,\text{seeded}} \;-\; \overline{\Delta P}_{i,\,\text{unseeded}}$$
 
-Standard errors are clustered at the site level to account for correlation within sites over time.
+That is, the mean gap during months when seeding was active minus the mean gap during months when it was not. Because the outcome is already the target − control difference, the site-level "pre/post" comparison automatically differences out any permanent site-specific offset. Each site's single DiD scalar is the unit of analysis.
 
-*Why is this valid? What assumptions are we making?*
+The aggregate effect is the simple mean across sites:
 
-Cloud seeding switches on and off seasonally within the same site. This means we're comparing the same target-control pair under seeding versus without seeding, across many sites and years. The site fixed effects remove any permanent geographic differences, and the time fixed effects remove shared weather patterns.
+$$\widehat{ATT} = \tfrac{1}{N}\sum_{i=1}^{N}\widehat{DiD}_i$$
 
-The key assumption is that the target-control gap would behave the same in seeded and non-seeded months if seeding had no effect. The fact that control areas are chosen by program operators to be climatologically similar to the target supports this.
+Every site counts the same regardless of how many months it seeded. Sites with zero seeded months or zero unseeded months in the panel are dropped automatically.
 
-## Running the Analysis
+### Standard errors
+
+Each site contributes exactly one $\widehat{DiD}_i$ to the aggregate, so sites are the unit of observation:
+
+$$\widehat{SE} = \frac{\mathrm{sd}\!\left(\widehat{DiD}_i\right)}{\sqrt{N}}$$
+
+This is clustered at the site level by construction: any within-site serial correlation is absorbed into the single site-level DiD before averaging, so it cannot inflate the aggregate variance. Inference uses a *t*-distribution with $N - 1$ degrees of freedom.
+
+### Identifying assumption
+
+Cloud seeding switches on and off seasonally within the same site, so we compare the same target–control pair under seeding versus without seeding across many sites and years. The key assumption is that the target−control gap would behave the same in seeded and unseeded months if seeding had no effect. Control areas are chosen by program operators to be climatologically similar to the target, which supports this.
+
+As a diagnostic, the average target-minus-control gap during unseeded months (all sites) is +0.079 mm (95% CI: [+0.064, +0.093]). A small interval near zero supports the identifying assumption that control tracks target in the absence of seeding. To reproduce:
 
 ```bash
-python analysis/twfe_cloud_seeding.py
+python analysis/check_treatment_vs_control_precip.py
+```
+
+### Data caveat: ERA5 coverage gap
+
+The panel's ERA5 precipitation ends at Dec 2022, but the seeding mask extends into 2025. Ten sites (000, 004, 008, 019, 041, 043, 083, 084, 100, 117) have all of their seeded months in 2023+ and therefore appear with zero seeded months in the panel. These are **not** never-treated controls and **not** a data bug — they are post-2022 programs outside the ERA5 window. They are excluded from the aggregate ATT automatically.
+
+## Running the DiD Analysis
+
+```bash
+python analysis/diff_diff.py
 ```
 
 Outputs:
-- Regression results with the estimated effect of seeding
-- Site-level summary table (mean gap with and without seeding)
-- Per-site time series charts saved to `figures/`
-- Streamlit dashboard to see site-level precipitation trends and the gap between target and control precipitation
+- Aggregate ATT with clustered-by-site SE, *t*-stat, and *p*-value
+- Site-level summary table (mean gap with and without seeding, per-site DiD) saved to `data/output/site_level_seeding_gaps.csv`
+- Paginated per-site precipitation time-series charts in `figures/site_precip_pageNN.png`
+
+For interactive per-site exploration with site-level inference:
+
+```bash
+streamlit run app.py
+```
