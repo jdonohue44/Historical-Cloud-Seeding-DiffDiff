@@ -227,53 +227,82 @@ else:
     site_se = site_t = site_p = ci_low = ci_high = np.nan
     site_sig = ""
 
-c1, c2, c3 = st.columns(3)
-c1.metric(
+# Color the headline per-site DiD the same way as the aggregate ATT.
+if pd.notna(site_p) and site_p < 0.05 and did > 0:
+    did_bg, did_fg, did_border = "#dcfce7", "#14532d", "#16a34a"
+elif pd.notna(site_p) and site_p < 0.05 and did < 0:
+    did_bg, did_fg, did_border = "#fee2e2", "#7f1d1d", "#dc2626"
+else:
+    did_bg, did_fg, did_border = "#f1f5f9", "#0f172a", "#64748b"
+
+did_value_str = (
+    f"{did:+.3f} mm {site_sig}" if pd.notna(did) else "n/a"
+)
+did_subtitle = (
+    f"Seeded months: {n_seeded}  |  Unseeded months: {n_unseeded}"
+    if pd.notna(site_t)
+    else "Insufficient months for inference (need ≥2 seeded and ≥2 unseeded)"
+)
+
+did_cols = st.columns([2.2, 1, 1.4, 1])
+
+did_cols[0].markdown(
+    f"""
+    <div style="
+        background: {did_bg};
+        border: 1px solid {did_border};
+        border-left: 6px solid {did_border};
+        border-radius: 6px;
+        padding: 10px 14px;
+        color: {did_fg};
+    ">
+      <div style="font-size: 0.80rem; opacity: 0.75; text-transform: uppercase;
+                  letter-spacing: 0.04em; font-weight: 600;">
+        Within-site DiD
+      </div>
+      <div style="font-size: 2.0rem; font-weight: 700; line-height: 1.15;">
+        {did_value_str}
+      </div>
+      <div style="font-size: 0.80rem; opacity: 0.80;">
+        {did_subtitle}
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+did_cols[1].metric(
+    "p-value",
+    f"{site_p:.4f}" if pd.notna(site_p) else "n/a",
+    help=(f"Two-sided p-value (Welch). t = {site_t:+.2f}. "
+          "Stars: * p<0.05, ** p<0.01, *** p<0.001.")
+    if pd.notna(site_t)
+    else "Needs ≥2 seeded and ≥2 unseeded months to compute.",
+)
+did_cols[2].metric(
+    "95% CI",
+    f"[{ci_low:+.3f}, {ci_high:+.3f}] mm" if pd.notna(ci_low) else "n/a",
+    help="95% confidence interval for the per-site DiD (Welch's t-interval).",
+)
+did_cols[3].metric(
+    "Std. error",
+    f"{site_se:.3f}" if pd.notna(site_se) else "n/a",
+    help="Unequal-variance (Welch) SE on the difference in monthly gap means. "
+         "Months are treated as independent within this site; serial "
+         "correlation is NOT corrected for.",
+)
+
+gap_cols = st.columns(2)
+gap_cols[0].metric(
     "Mean gap, unseeded months",
     f"{gap_unseeded:+.2f} mm" if pd.notna(gap_unseeded) else "n/a",
     help="Mean(target − control) in months with no active seeding. "
          "Expected to be near zero if the control is a good match.",
 )
-c2.metric(
+gap_cols[1].metric(
     "Mean gap, seeded months",
     f"{gap_seeded:+.2f} mm" if pd.notna(gap_seeded) else "n/a",
     help="Mean(target − control) in months with active seeding.",
-)
-c3.metric(
-    "Within-site DiD",
-    f"{did:+.2f} mm" + (f" {site_sig}" if site_sig else "") if pd.notna(did) else "n/a",
-    help="Seeded-months gap minus unseeded-months gap. "
-         "Positive → seeding associated with more precipitation at target relative to control.",
-)
-
-c4, c5, c6, c7 = st.columns(4)
-c4.metric(
-    "SE (Welch)",
-    f"{site_se:.3f}" if pd.notna(site_se) else "n/a",
-    help="Unequal-variance SE on the difference in monthly gap means. "
-         "Months are treated as independent observations within this site; "
-         "serial correlation is NOT corrected for.",
-)
-c5.metric(
-    "t-stat",
-    f"{site_t:+.2f}" if pd.notna(site_t) else "n/a",
-    help="Welch's t for H0: DiD = 0.",
-)
-c6.metric(
-    "p-value",
-    f"{site_p:.4f}" if pd.notna(site_p) else "n/a",
-    help="Two-sided p-value from Welch's t-distribution.",
-)
-c7.metric(
-    "95% CI",
-    f"[{ci_low:+.2f}, {ci_high:+.2f}]" if pd.notna(ci_low) else "n/a",
-    help="95% confidence interval for the per-site DiD (Welch).",
-)
-
-st.caption(
-    f"Seeded months: {n_seeded}  |  Unseeded months: {n_unseeded}  |  Total: {n_total}"
-    + (f"  |  Insufficient months for inference (need ≥2 seeded and ≥2 unseeded)."
-       if pd.isna(site_t) else "")
 )
 
 # ── Main chart ────────────────────────────────────────────────────────────────
@@ -318,14 +347,51 @@ st.pyplot(fig)
 plt.close()
 
 # ── All-sites comparison table ────────────────────────────────────────────────
+@st.cache_data
+def compute_all_site_stats(df):
+    """Per-site DiD + Welch's t-test summary across all sites."""
+    rows = []
+    for sid, grp in df.groupby("site_id"):
+        g_s = grp.loc[grp["seeded"] == 1, "precip_gap"].dropna().values
+        g_u = grp.loc[grp["seeded"] == 0, "precip_gap"].dropna().values
+        mean_s = g_s.mean() if len(g_s) else np.nan
+        mean_u = g_u.mean() if len(g_u) else np.nan
+        if len(g_s) >= 2 and len(g_u) >= 2:
+            t_val, p_val = stats.ttest_ind(g_s, g_u, equal_var=False)
+            did_val = mean_s - mean_u
+        else:
+            t_val = p_val = np.nan
+            did_val = (
+                mean_s - mean_u if pd.notna(mean_s) and pd.notna(mean_u) else np.nan
+            )
+        rows.append({
+            "site_id": sid,
+            "Mean gap (unseeded)": mean_u,
+            "Mean gap (seeded)":   mean_s,
+            "Within-site DiD":     did_val,
+            "t-stat":              t_val,
+            "p-value":             p_val,
+            "n_seeded":            int(len(g_s)),
+            "n_unseeded":          int(len(g_u)),
+        })
+    return pd.DataFrame(rows).set_index("site_id")
+
+
 with st.expander("All sites comparison table"):
-    summary = (
-        df.groupby(["site_id", "seeded"])["precip_gap"]
-        .mean()
-        .unstack(fill_value=np.nan)
-        .rename(columns={0: "Mean gap (unseeded)", 1: "Mean gap (seeded)"})
+    summary = compute_all_site_stats(df).join(site_meta[["state", "project_name"]])
+    summary = summary.sort_values("Within-site DiD", ascending=False, na_position="last")
+    st.dataframe(
+        summary.style.format({
+            "Mean gap (unseeded)": "{:+.2f}",
+            "Mean gap (seeded)":   "{:+.2f}",
+            "Within-site DiD":     "{:+.2f}",
+            "t-stat":              "{:+.2f}",
+            "p-value":             "{:.4f}",
+        }, na_rep="n/a"),
+        use_container_width=True,
     )
-    summary["Within-site DiD"] = summary["Mean gap (seeded)"] - summary["Mean gap (unseeded)"]
-    summary = summary.join(site_meta[["state", "project_name"]])
-    summary = summary.round(2).sort_values("Within-site DiD", ascending=False)
-    st.dataframe(summary, use_container_width=True)
+    st.caption(
+        "p-values are two-sided from Welch's (unequal-variance) t-test on the "
+        "monthly target − control gap: seeded months vs unseeded months. "
+        "Assumes months are independent within site (serial correlation not corrected)."
+    )
