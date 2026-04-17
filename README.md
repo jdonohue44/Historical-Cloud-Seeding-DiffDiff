@@ -4,14 +4,13 @@ Does cloud seeding actually increase precipitation? This project estimates the e
 
 ## Input Data Sources
 
-1. Cloud Seeding Activities in the United States (2000-2025) — [Zenodo](https://zenodo.org/records/16754931)
-2. Precipitation data — ERA5 reanalysis
+1. **Cloud Seeding Activities in the United States (2000–2025)** — Publicly available from Zenodo: [https://zenodo.org/records/16754931](https://zenodo.org/records/16754931). The dataset is described in the accompanying *Scientific Data* paper, “Structured dataset of reported cloud seeding activities in the United States (2000–2025) using an LLM”: [https://www.nature.com/articles/s41597-025-06273-1](https://www.nature.com/articles/s41597-025-06273-1). The dataset was created from NOAA cloud seeding reports spanning 2000 to 2025, which were transformed into a structured CSV dataset.
 
-Each cloud seeding program has a **target area** (where they seeded) and a **control area** (a nearby similar region that isn't seeded).
+2. **Precipitation Data** — Monthly ERA5 reanalysis data obtained from the Copernicus Climate Data Store (CDS) ERA5 monthly averaged data on single levels portal: [https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means). ERA5 is ECMWF’s fifth-generation global reanalysis, and the CDS monthly single-levels dataset provides monthly data from 1940 until December 2022.
 
 ## Data Pre-Processing: Building the Panel
 
-A full panel of seeding × precipitation data is constructed in preparation for the difference-in-differences comparison. The panel is available at `data/input/cloud_seeding_monthly_panel.csv`
+A full panel of seeding × precipitation data is constructed in preparation for the difference-in-differences comparison. The panel is available at `data/input/cloud_seeding_monthly_panel.csv`. Note that each cloud seeding operation from Input Data Source (1) has a **target area** (where they seeded) and a **control area** (a nearby similar region that isn't seeded). The target area is always specified, but the control area is not. For operations which did not specify a control area, a machine-learning model was used to find a valid control site (*will link to ML repo once Kara creates it*).
 
 ### Columns
 
