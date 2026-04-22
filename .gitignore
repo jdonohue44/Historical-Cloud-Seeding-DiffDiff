@@ -3,3 +3,5 @@ __pycache__
 .env
 .venv
 .claude
+/data/input/prism_monthly/
+!data/input/prism_monthly/.gitkeep

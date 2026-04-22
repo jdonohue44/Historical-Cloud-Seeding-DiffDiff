@@ -4,3 +4,4 @@ linearmodels
 streamlit
 xarray
 netCDF4
+rasterio
