@@ -22,29 +22,50 @@ OUTPUT:
  - Console: overall mean gap + per-site diagnostic table + selection
    diagnostics (correlations of n_seeded with site-level DiD and with
    control-quality gap).
- - data/output/control_quality_by_site.csv
- - figures/control_quality_unseeded_gap.png
+ - data/output/control_quality_by_site_{dataset}.csv
+ - figures/control_quality_unseeded_gap_{dataset}.png
      Per-site mean target-minus-control gap during unseeded months, with 95% CI.
- - figures/selection_diagnostics.png
+ - figures/selection_diagnostics_{dataset}.png
      Two scatter plots: n_seeded vs site-level DiD, and n_seeded vs
      unseeded-month gap. Flags whether heavy-seeding sites differ
      systematically in effect size or control quality.
+
+NOTE: rows with `bogus_control == True` (sites whose control coordinates
+fall outside the western US due to geocoder fallbacks to Guangzhou/Princeton)
+are filtered out by default. Remove the filter once the NC control coords
+are corrected. See data/scripts/audit_era5_data.py for context.
 """
 
+import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+DATASET_FILES = {
+    "era5":  "cloud_seeding_monthly_panel.csv",
+    "prism": "cloud_seeding_monthly_panel_prism.csv",
+}
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--data", choices=list(DATASET_FILES), default="era5",
+                    help="Which precipitation panel to analyze (default: era5)")
+args = parser.parse_args()
+
 ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = ROOT / "data" / "input" / "cloud_seeding_monthly_panel.csv"
+DATA_PATH = ROOT / "data" / "input" / DATASET_FILES[args.data]
 OUT_DIR = ROOT / "data" / "output"
 FIG_DIR = ROOT / "figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
+print(f"Dataset: {args.data.upper()}  ({DATA_PATH.name})")
+
 # ── Load ─────────────────────────────────────────────────────────────────────
 df = pd.read_csv(DATA_PATH)
+n_before = len(df)
+df = df[~df["bogus_control"]].copy()
+print(f"Filtered {n_before - len(df):,} rows flagged bogus_control "
+      f"({df['site_id'].nunique()} sites remain)")
 df["precip_gap"] = df["target_area_precip_mm"] - df["control_area_precip_mm"]
 df["seeded"] = df["target_area_seeded"].astype(int)
 
@@ -108,7 +129,7 @@ for _, r in per_site.iterrows():
     print(f"  {r['site_id']:<30} {n:>5d} {mg:>+12.3f} {ci_str:>22}")
 print("  " + "-" * 70)
 
-csv_out = OUT_DIR / "control_quality_by_site.csv"
+csv_out = OUT_DIR / f"control_quality_by_site_{args.data}.csv"
 per_site.round(4).to_csv(csv_out, index=False)
 print(f"\nSaved {csv_out}")
 
@@ -132,7 +153,7 @@ ax.set_title(
 )
 ax.grid(True, axis="x", alpha=0.25)
 fig.tight_layout()
-fig_out = FIG_DIR / "control_quality_unseeded_gap.png"
+fig_out = FIG_DIR / f"control_quality_unseeded_gap_{args.data}.png"
 fig.savefig(fig_out, dpi=150, bbox_inches="tight")
 plt.close()
 print(f"Saved {fig_out}")
@@ -199,7 +220,7 @@ axes[1].set_title(f"Control quality vs seeding intensity\n(Pearson r = {corr_gap
 axes[1].grid(True, alpha=0.25)
 
 fig.tight_layout()
-fig_out2 = FIG_DIR / "selection_diagnostics.png"
+fig_out2 = FIG_DIR / f"selection_diagnostics_{args.data}.png"
 fig.savefig(fig_out2, dpi=150, bbox_inches="tight")
 plt.close()
 print(f"Saved {fig_out2}")

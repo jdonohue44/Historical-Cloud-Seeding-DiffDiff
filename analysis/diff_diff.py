@@ -30,25 +30,46 @@ INPUT:
 OUTPUT:
   - Console: per-site seeded/unseeded month counts, site-level DiDs,
     and the equal-weighted aggregate ATT with clustered-by-site SE.
-  - data/output/site_level_seeding_gaps.csv: per-site mean gap by seeding
-    status and within-site DiD.
-  - figures/site_precip_pageNN.png: paginated line charts of target vs
-    control precipitation by site, with seeding months shaded.
+  - data/output/site_level_seeding_gaps_{dataset}.csv: per-site mean gap by
+    seeding status and within-site DiD.
+  - figures/site_precip_pageNN_{dataset}.png: paginated line charts of target
+    vs control precipitation by site, with seeding months shaded.
+
+NOTE: rows with `bogus_control == True` (sites whose control coordinates
+fall outside the western US due to geocoder fallbacks to Guangzhou/Princeton)
+are filtered out by default. Remove the filter once the NC control coords
+are corrected. See data/scripts/audit_era5_data.py for context.
 """
 
+import argparse
 from pathlib import Path
 import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
 
+DATASET_FILES = {
+    "era5":  "cloud_seeding_monthly_panel.csv",
+    "prism": "cloud_seeding_monthly_panel_prism.csv",
+}
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--data", choices=list(DATASET_FILES), default="era5",
+                    help="Which precipitation panel to analyze (default: era5)")
+args = parser.parse_args()
+
 ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = ROOT / "data" / "input" / "cloud_seeding_monthly_panel.csv"
+DATA_PATH = ROOT / "data" / "input" / DATASET_FILES[args.data]
 FIG_DIR = ROOT / "figures"
 FIG_DIR.mkdir(exist_ok=True)
 
+print(f"Dataset: {args.data.upper()}  ({DATA_PATH.name})")
+
 # -- Load and prepare ---------------------------------------------------------
 df = pd.read_csv(DATA_PATH)
+n_before = len(df)
+df = df[~df["bogus_control"]].copy()
+print(f"Filtered {n_before - len(df):,} rows flagged bogus_control "
+      f"({df['site_id'].nunique()} sites remain)")
 df["precip_gap"] = df["target_area_precip_mm"] - df["control_area_precip_mm"]
 df["seeded"] = df["target_area_seeded"].astype(int)
 df["year_month"] = pd.to_datetime(df["year_month"])
@@ -154,8 +175,9 @@ for site_id, row in site_summary.iterrows():
 print("-" * 80)
 
 (ROOT / "data" / "output").mkdir(parents=True, exist_ok=True)
-site_summary.to_csv(ROOT / "data" / "output" / "site_level_seeding_gaps.csv")
-print(f"Saved {ROOT / 'data' / 'output' / 'site_level_seeding_gaps.csv'}")
+out_csv = ROOT / "data" / "output" / f"site_level_seeding_gaps_{args.data}.csv"
+site_summary.to_csv(out_csv)
+print(f"Saved {out_csv}")
 
 # -- Per-site line charts (paginated) -----------------------------------------
 # Monthly target vs control precipitation with seeding months shaded.
@@ -166,8 +188,8 @@ COLS_PER_PAGE = 3
 ROWS_PER_PAGE = 4
 SITES_PER_PAGE = COLS_PER_PAGE * ROWS_PER_PAGE
 
-# Clear any stale pages + the old monolithic file from previous runs.
-for stale in FIG_DIR.glob("site_precip_page*.png"):
+# Clear stale pages for THIS dataset only (don't wipe the other dataset's pages).
+for stale in FIG_DIR.glob(f"site_precip_page*_{args.data}.png"):
     stale.unlink()
 legacy = FIG_DIR / "site_precip_timeseries.png"
 if legacy.exists():
@@ -226,7 +248,7 @@ for page in range(n_pages):
         fontsize=12, y=1.00,
     )
     fig.tight_layout()
-    out_path = FIG_DIR / f"site_precip_page{page + 1:02d}.png"
+    out_path = FIG_DIR / f"site_precip_page{page + 1:02d}_{args.data}.png"
     fig.savefig(out_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     saved_paths.append(out_path)

@@ -6,7 +6,9 @@ cloud_seeding_monthly_panel.csv in the format diff_diff.py expects.
 
 Key decisions:
 - tp (total precipitation) is used as the outcome: large-scale + convective precip.
-  ERA5 stores it in meters; we convert to mm (*1000).
+  ERA5 monthly `tp` is stored as a mean daily rate in m/day (the monthly mean
+  of daily accumulations). We convert to mm/month by multiplying by 1000
+  (m -> mm) and by the number of days in that month.
 - Control precip = nanmean across the up to 6 control points for each site.
   Sites with fewer than 6 control points have NaN padding in the trailing slots.
 - seeded_month_mask (0/1) becomes the target_area_seeded column.
@@ -34,13 +36,38 @@ n_sites = ds.sizes["site"]
 n_time  = ds.sizes["time"]
 times   = pd.DatetimeIndex(ds["time"].values)
 
-# ERA5 tp in meters → convert to mm
-tp_seed = ds["tp_seed_site"].values * 1000.0          # (site, time)
-tp_ctrl = ds["tp_control_site"].values * 1000.0       # (site, control, time)
-seeded_mask = ds["seeded_month_mask"].values           # (site, time)  0/1
+# ERA5 monthly tp is mean daily rate in m/day -> mm/month via
+# (m/day) * 1000 (mm/m) * days_in_month.
+days_in_month = times.days_in_month.values.astype(np.float32)  # (time,)
+
+tp_seed = (
+    ds["tp_seed_site"].values * 1000.0 * days_in_month[np.newaxis, :]
+)                                                        # (site, time)
+tp_ctrl = (
+    ds["tp_control_site"].values * 1000.0
+    * days_in_month[np.newaxis, np.newaxis, :]
+)                                                        # (site, control, time)
+seeded_mask = ds["seeded_month_mask"].values             # (site, time)  0/1
 
 site_lats = ds["site_latitude"].values                 # (site,)
 site_lons = ds["site_longitude"].values                # (site,)
+
+# Flag sites whose control coords fall outside the western US (geocoder
+# fallbacks to Guangzhou/Princeton etc.). See audit_era5_data.py section B.
+# Any site with >=1 valid control outside the box is flagged; downstream
+# analysis can filter on `bogus_control == False`.
+WEST_LAT_MIN, WEST_LAT_MAX = 24.0, 50.0
+WEST_LON_MIN, WEST_LON_MAX = -125.0, -95.0
+ctrl_lat = ds["control_latitude"].values
+ctrl_lon = ds["control_longitude"].values
+ctrl_lon180 = np.where(ctrl_lon > 180, ctrl_lon - 360, ctrl_lon)
+_valid = ~(np.isnan(ctrl_lat) | np.isnan(ctrl_lon180))
+_in_west = (
+    (ctrl_lat >= WEST_LAT_MIN) & (ctrl_lat <= WEST_LAT_MAX)
+    & (ctrl_lon180 >= WEST_LON_MIN) & (ctrl_lon180 <= WEST_LON_MAX)
+)
+bogus_control_site = (_valid & ~_in_west).any(axis=1)  # (site,)
+print(f"  Flagged {bogus_control_site.sum()} sites with bogus control coords.")
 
 # Mean across control points (nanmean ignores NaN padding)
 tp_ctrl_mean = np.nanmean(tp_ctrl, axis=1)             # (site, time)
@@ -62,6 +89,7 @@ df = pd.DataFrame({
     "target_area_precip_mm":   tp_seed[site_idx, time_idx],
     "control_area_precip_mm":  tp_ctrl_mean[site_idx, time_idx],
     "target_area_seeded":      seeded_mask[site_idx, time_idx].astype(bool),
+    "bogus_control":           bogus_control_site[site_idx],
 })
 
 # Drop rows where either precip is NaN (ERA5 gap for 2023-2025 if not present)
